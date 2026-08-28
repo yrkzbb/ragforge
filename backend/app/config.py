@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://redis:6379/0"
     qdrant_url: str = "http://qdrant:6333"
     openai_api_key: str = ""
+    openai_base_url: str = "https://api.openai.com/v1"
     chat_model: str = "gpt-4.1-mini"
     embedding_model: str = "text-embedding-3-small"
     embedding_dimensions: int = 1536
