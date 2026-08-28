@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ragforge-config
+  namespace: ragforge
+data:
+  ENVIRONMENT: production
+  OPENAI_BASE_URL: https://api.gpt.ge/v1
+  CHAT_MODEL: gpt-4.1-mini
+  EMBEDDING_MODEL: text-embedding-3-small
+  EMBEDDING_DIMENSIONS: "1536"
+  RERANKER_MODEL: BAAI/bge-reranker-base
+  RERANKER_ENABLED: "true"
+  OTLP_ENDPOINT: http://otel-collector:4317
+  JAEGER_QUERY_URL: http://jaeger-query:16686
+  CORS_ORIGINS: https://ragforge-agent-knowledge.brawny-stork-5438.chatgpt.site

@@ -71,3 +71,5 @@ docker compose config
 - API 部署为至少两个实例；Worker 独立扩缩容。
 - 为外部模型配置限流、超时、预算与熔断。
 - 在线工作台只部署前端；FastAPI/PostgreSQL/Redis/Collector 需部署在容器平台，再通过私有网络或 HTTPS API 连接。
+
+Kubernetes 生产清单与上线顺序见 [`deploy/kubernetes/README.md`](deploy/kubernetes/README.md)。镜像以 UID `10001` 非 root 运行，API 配有健康检查，数据库迁移由独立 Job 执行，API 配有 HPA 与 PDB。清单故意不包含真实 Secret。

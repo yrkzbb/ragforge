@@ -1,0 +1,18 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ragforge-migrate
+  namespace: ragforge
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: migrate
+          image: ghcr.io/REPLACE_OWNER/ragforge:REPLACE_TAG
+          command: ["python", "scripts/migrate.py"]
+          envFrom:
+            - configMapRef: {name: ragforge-config}
+            - secretRef: {name: ragforge-secrets}
+          securityContext: {allowPrivilegeEscalation: false, runAsNonRoot: true, runAsUser: 10001}

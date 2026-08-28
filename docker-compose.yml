@@ -16,6 +16,8 @@ services:
     env_file: .env
     environment: {DATABASE_URL: postgresql+asyncpg://ragforge:ragforge@postgres:5432/ragforge, REDIS_URL: redis://redis:6379/0, OTLP_ENDPOINT: http://otel-collector:4317, HF_HOME: /models/huggingface, FASTEMBED_CACHE_PATH: /models/fastembed}
     volumes: ["modelcache:/models"]
+    healthcheck: {test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"], interval: 10s, timeout: 5s, retries: 10}
+    security_opt: ["no-new-privileges:true"]
     ports: ["8000:8000"]
     depends_on: {postgres: {condition: service_healthy}, redis: {condition: service_healthy}}
   worker:
@@ -23,7 +25,9 @@ services:
     command: celery -A app.worker.celery_app worker --loglevel=INFO --concurrency=2
     env_file: .env
     environment: {DATABASE_URL: postgresql+asyncpg://ragforge:ragforge@postgres:5432/ragforge, REDIS_URL: redis://redis:6379/0, OTLP_ENDPOINT: http://otel-collector:4317}
+    volumes: ["modelcache:/models"]
     depends_on: {postgres: {condition: service_healthy}, redis: {condition: service_healthy}}
+    security_opt: ["no-new-privileges:true"]
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.133.0
     command: ["--config=/etc/otelcol/config.yaml"]

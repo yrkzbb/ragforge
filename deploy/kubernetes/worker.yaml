@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: ragforge-worker, namespace: ragforge}
+spec:
+  replicas: 2
+  selector: {matchLabels: {app: ragforge-worker}}
+  template:
+    metadata: {labels: {app: ragforge-worker}}
+    spec:
+      securityContext: {runAsNonRoot: true, runAsUser: 10001, fsGroup: 10001}
+      containers:
+        - name: worker
+          image: ghcr.io/REPLACE_OWNER/ragforge:REPLACE_TAG
+          command: ["celery", "-A", "app.worker.celery_app", "worker", "--loglevel=INFO", "--concurrency=2"]
+          envFrom:
+            - configMapRef: {name: ragforge-config}
+            - secretRef: {name: ragforge-secrets}
+          resources:
+            requests: {cpu: 500m, memory: 512Mi}
+            limits: {cpu: "2", memory: 2Gi}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: ["ALL"]}}
+          volumeMounts:
+            - {name: model-cache, mountPath: /models}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim: {claimName: ragforge-model-cache}
+        - {name: tmp, emptyDir: {}}

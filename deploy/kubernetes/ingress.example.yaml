@@ -1,0 +1,18 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ragforge-api
+  namespace: ragforge
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: 20m
+spec:
+  tls:
+    - hosts: [api.ragforge.example.com]
+      secretName: ragforge-api-tls
+  rules:
+    - host: api.ragforge.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: {service: {name: ragforge-api, port: {name: http}}}
