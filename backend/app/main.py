@@ -12,7 +12,7 @@ from sqlalchemy import func,select
 from sqlalchemy.ext.asyncio import AsyncSession
 from .config import get_settings
 from .db import get_db
-from .models import BuildJob,BuildState,ChangeEvent,Chunk,EvalRun,FeedbackMemory,FeedbackState,KnowledgeBase
+from .models import BuildJob,BuildState,ChangeEvent,Chunk,Document,EvalRun,FeedbackMemory,FeedbackState,KnowledgeBase
 from .schemas import ChatRequest,DocumentIngest,EvalRequest,FeedbackCreate,FeedbackReview,KnowledgeBaseCreate,SearchRequest
 from .services.llm import LLMService
 from .services.retrieval import ndcg_at_k,precision_at_k,recall_at_k,reciprocal_rank
@@ -43,6 +43,21 @@ async def traces(limit:int=Query(20,ge=1,le=100),service:str="ragforge-api"):
 @app.post("/api/v1/knowledge-bases",status_code=201)
 async def create_kb(body:KnowledgeBaseCreate,db:AsyncSession=Depends(get_db)):
     kb=KnowledgeBase(name=body.name);db.add(kb);await db.commit();await db.refresh(kb);return {"id":kb.id,"name":kb.name}
+
+@app.get("/api/v1/dashboard")
+async def dashboard(db:AsyncSession=Depends(get_db)):
+    knowledge_bases=(await db.scalars(select(KnowledgeBase).order_by(KnowledgeBase.created_at.desc()))).all()
+    rows=[]
+    for kb in knowledge_bases:
+        document_ids=select(Document.id).where(Document.knowledge_base_id==kb.id,Document.active.is_(True))
+        document_count=await db.scalar(select(func.count()).select_from(Document).where(Document.knowledge_base_id==kb.id,Document.active.is_(True))) or 0
+        chunk_count=await db.scalar(select(func.count()).select_from(Chunk).where(Chunk.document_id.in_(document_ids),Chunk.level=="child")) or 0
+        pending_events=await db.scalar(select(func.count()).select_from(ChangeEvent).where(ChangeEvent.knowledge_base_id==kb.id,ChangeEvent.consumed.is_(False))) or 0
+        last_job=await db.scalar(select(BuildJob).where(BuildJob.knowledge_base_id==kb.id).order_by(BuildJob.created_at.desc()).limit(1))
+        rows.append({"id":kb.id,"name":kb.name,"documents":document_count,"chunks":chunk_count,"pending_events":pending_events,"build_state":last_job.state if last_job else None,"image_version":last_job.image_version if last_job else None,"updated_at":last_job.updated_at if last_job else kb.created_at})
+    feedback_counts={state.value:await db.scalar(select(func.count()).select_from(FeedbackMemory).where(FeedbackMemory.state==state)) or 0 for state in FeedbackState}
+    latest_eval=await db.scalar(select(EvalRun).order_by(EvalRun.created_at.desc()).limit(1))
+    return {"knowledge_bases":rows,"totals":{"knowledge_bases":len(rows),"documents":sum(x["documents"] for x in rows),"chunks":sum(x["chunks"] for x in rows),"pending_events":sum(x["pending_events"] for x in rows)},"feedback":feedback_counts,"latest_evaluation":{"dataset_name":latest_eval.dataset_name,"metrics":latest_eval.metrics,"passed":latest_eval.passed,"created_at":latest_eval.created_at} if latest_eval else None}
 
 @app.post("/api/v1/knowledge-bases/{kb_id}/documents",status_code=202)
 async def ingest(kb_id:UUID,body:DocumentIngest,db:AsyncSession=Depends(get_db)):
