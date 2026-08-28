@@ -56,6 +56,7 @@ async def dashboard(db:AsyncSession=Depends(get_db)):
         last_job=await db.scalar(select(BuildJob).where(BuildJob.knowledge_base_id==kb.id).order_by(BuildJob.created_at.desc()).limit(1))
         rows.append({"id":kb.id,"name":kb.name,"documents":document_count,"chunks":chunk_count,"pending_events":pending_events,"build_state":last_job.state if last_job else None,"image_version":last_job.image_version if last_job else None,"updated_at":last_job.updated_at if last_job else kb.created_at})
     feedback_counts={state.value:await db.scalar(select(func.count()).select_from(FeedbackMemory).where(FeedbackMemory.state==state)) or 0 for state in FeedbackState}
+    feedback_counts["injections"]=await db.scalar(select(func.coalesce(func.sum(FeedbackMemory.use_count),0))) or 0
     latest_eval=await db.scalar(select(EvalRun).order_by(EvalRun.created_at.desc()).limit(1))
     return {"knowledge_bases":rows,"totals":{"knowledge_bases":len(rows),"documents":sum(x["documents"] for x in rows),"chunks":sum(x["chunks"] for x in rows),"pending_events":sum(x["pending_events"] for x in rows)},"feedback":feedback_counts,"latest_evaluation":{"dataset_name":latest_eval.dataset_name,"metrics":latest_eval.metrics,"passed":latest_eval.passed,"created_at":latest_eval.created_at} if latest_eval else None}
 
@@ -104,28 +105,37 @@ async def review_feedback(item_id:UUID,body:FeedbackReview,db:AsyncSession=Depen
 @app.get("/api/v1/feedback")
 async def list_feedback(limit:int=Query(50,ge=1,le=200),db:AsyncSession=Depends(get_db)):
     items=(await db.scalars(select(FeedbackMemory).order_by(FeedbackMemory.created_at.desc()).limit(limit))).all()
-    return [{"id":item.id,"user_id":item.user_id,"knowledge_base_id":item.knowledge_base_id,"correction":item.correction,"reason":item.reason,"scope":item.scope,"confidence":item.confidence,"state":item.state,"created_at":item.created_at} for item in items]
+    return [{"id":item.id,"user_id":item.user_id,"knowledge_base_id":item.knowledge_base_id,"correction":item.correction,"reason":item.reason,"scope":item.scope,"confidence":item.confidence,"state":item.state,"source_trace_id":item.source_trace_id,"use_count":item.use_count,"last_used_at":item.last_used_at,"created_at":item.created_at} for item in items]
 
 @app.post("/api/v1/chat")
 async def chat(body:ChatRequest,request:Request,db:AsyncSession=Depends(get_db)):
     with AGENT_LATENCY.labels("chat").time(),tracer.start_as_current_span("agent.session") as span:
         span.set_attribute("agent.user_id",body.user_id);span.set_attribute("agent.conversation_id",body.conversation_id or "new")
         try:
-            with tracer.start_as_current_span("tool.call") as tool_span:
-                tool_span.set_attribute("tool.name","knowledge_base_search")
-                tool_span.set_attribute("tool.type","retrieval")
-                _,contexts=await SearchService(db).search(body.knowledge_base_id,body.message,8,30)
-                tool_span.set_attribute("tool.result.count",len(contexts))
-            memory_items=await FeedbackMemoryService(db).select_for_chat(body.user_id,body.knowledge_base_id,body.message)
+            with tracer.start_as_current_span("agent.handoff") as handoff:
+                handoff.set_attribute("agent.from","orchestrator");handoff.set_attribute("agent.to","retrieval-agent");handoff.set_attribute("agent.handoff.reason","knowledge_required")
+                with tracer.start_as_current_span("agent.retrieval") as retrieval_span:
+                    retrieval_span.set_attribute("agent.name","retrieval-agent")
+                    with tracer.start_as_current_span("tool.call") as tool_span:
+                        tool_span.set_attribute("tool.name","knowledge_base_search");tool_span.set_attribute("tool.type","retrieval")
+                        _,contexts=await SearchService(db).search(body.knowledge_base_id,body.message,8,30)
+                        tool_span.set_attribute("tool.result.count",len(contexts))
+                    memory_service=FeedbackMemoryService(db)
+                    memory_items=await memory_service.select_for_chat(body.user_id,body.knowledge_base_id,body.message)
+                    await memory_service.record_injections(memory_items)
             memories=[f"适用范围：{item.scope}；纠正：{item.correction}；原因：{item.reason}" for item in memory_items]
-            with tracer.start_as_current_span("llm.generate") as llm_span:
-                answer,usage=await LLMService().answer(body.message,contexts,list(memories))
-                cost=(usage["input_tokens"]*settings.chat_input_cost_per_million+usage["output_tokens"]*settings.chat_output_cost_per_million)/1_000_000
-                for key,value in (("input",usage["input_tokens"]),("output",usage["output_tokens"])):TOKEN_USAGE.labels(key,settings.chat_model).inc(value)
-                LLM_COST.labels(settings.chat_model).inc(cost)
-                llm_span.set_attribute("llm.token.input",usage["input_tokens"]);llm_span.set_attribute("llm.token.output",usage["output_tokens"]);llm_span.set_attribute("llm.cost.usd",cost)
+            with tracer.start_as_current_span("agent.handoff") as handoff:
+                handoff.set_attribute("agent.from","retrieval-agent");handoff.set_attribute("agent.to","answer-agent");handoff.set_attribute("agent.handoff.reason","context_ready")
+                with tracer.start_as_current_span("agent.answer") as answer_span:
+                    answer_span.set_attribute("agent.name","answer-agent");answer_span.set_attribute("agent.memory.count",len(memory_items))
+                    with tracer.start_as_current_span("llm.generate") as llm_span:
+                        answer,usage=await LLMService().answer(body.message,contexts,list(memories))
+                        cost=(usage["input_tokens"]*settings.chat_input_cost_per_million+usage["output_tokens"]*settings.chat_output_cost_per_million)/1_000_000
+                        for key,value in (("input",usage["input_tokens"]),("output",usage["output_tokens"])):TOKEN_USAGE.labels(key,settings.chat_model).inc(value)
+                        LLM_COST.labels(settings.chat_model).inc(cost)
+                        llm_span.set_attribute("llm.token.input",usage["input_tokens"]);llm_span.set_attribute("llm.token.output",usage["output_tokens"]);llm_span.set_attribute("llm.cost.usd",cost)
             AGENT_REQUESTS.labels("chat","ok").inc()
-            return {"answer":answer,"sources":[{"chunk_id":c.id,"breadcrumb":c.breadcrumb,"score":c.rerank_score} for c in contexts],"memory_ids":[str(item.id) for item in memory_items],"usage":{**usage,"estimated_cost_usd":cost},"trace_id":format(span.get_span_context().trace_id,"032x")}
+            return {"answer":answer,"sources":[{"chunk_id":c.id,"breadcrumb":c.breadcrumb,"score":c.rerank_score} for c in contexts],"memory_ids":[str(item.id) for item in memory_items],"handoffs":[{"from":"orchestrator","to":"retrieval-agent"},{"from":"retrieval-agent","to":"answer-agent"}],"usage":{**usage,"estimated_cost_usd":cost},"trace_id":format(span.get_span_context().trace_id,"032x")}
         except Exception as exc:
             AGENT_REQUESTS.labels("chat","error").inc();span.record_exception(exc);span.set_status(Status(StatusCode.ERROR,str(exc)));raise
 

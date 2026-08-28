@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -39,3 +40,12 @@ class FeedbackMemoryService:
         )).all()
         ranked = sorted(candidates, key=lambda item: _lexical_relevance(query, item), reverse=True)
         return [item for item in ranked if _lexical_relevance(query, item) >= 0.12][:limit]
+
+    async def record_injections(self, items: list[FeedbackMemory]):
+        if not items:
+            return
+        now = datetime.now(timezone.utc)
+        for item in items:
+            item.use_count += 1
+            item.last_used_at = now
+        await self.db.commit()
