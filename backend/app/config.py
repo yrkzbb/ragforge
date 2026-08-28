@@ -11,7 +11,13 @@ class Settings(BaseSettings):
     chat_model: str = "gpt-4.1-mini"
     embedding_model: str = "text-embedding-3-small"
     embedding_dimensions: int = 1536
+    reranker_model: str = "BAAI/bge-reranker-base"
+    reranker_enabled: bool = True
+    reranker_batch_size: int = 16
     otlp_endpoint: str = "http://otel-collector:4317"
+    jaeger_query_url: str = "http://jaeger:16686"
+    chat_input_cost_per_million: float = 0.0
+    chat_output_cost_per_million: float = 0.0
     cors_origins: str = "http://localhost:3000"
     compile_debounce_seconds: int = 3
     worker_lease_seconds: int = 300
@@ -19,4 +25,3 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-

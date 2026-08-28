@@ -14,7 +14,8 @@ services:
   api:
     build: ./backend
     env_file: .env
-    environment: {DATABASE_URL: postgresql+asyncpg://ragforge:ragforge@postgres:5432/ragforge, REDIS_URL: redis://redis:6379/0, OTLP_ENDPOINT: http://otel-collector:4317}
+    environment: {DATABASE_URL: postgresql+asyncpg://ragforge:ragforge@postgres:5432/ragforge, REDIS_URL: redis://redis:6379/0, OTLP_ENDPOINT: http://otel-collector:4317, HF_HOME: /models/huggingface, FASTEMBED_CACHE_PATH: /models/fastembed}
+    volumes: ["modelcache:/models"]
     ports: ["8000:8000"]
     depends_on: {postgres: {condition: service_healthy}, redis: {condition: service_healthy}}
   worker:
@@ -32,5 +33,4 @@ services:
     image: jaegertracing/jaeger:2.9.0
     environment: {COLLECTOR_OTLP_ENABLED: "true"}
     ports: ["16686:16686", "4318:4318"]
-volumes: {pgdata: {}, redisdata: {}}
-
+volumes: {pgdata: {}, redisdata: {}, modelcache: {}}

@@ -13,3 +13,7 @@ def test_ir_metrics():
     assert reciprocal_rank(got,relevant)==1
     assert 0<ndcg_at_k(got,relevant,4)<=1
 
+def test_source_level_deduplication_keeps_metrics_bounded():
+    got=list(dict.fromkeys(["doc-a","doc-a","doc-b"]));relevant={"doc-a"}
+    assert recall_at_k(got,relevant,10)==1
+    assert 0<=ndcg_at_k(got,relevant,10)<=1

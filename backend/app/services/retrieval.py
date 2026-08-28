@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 @dataclass
 class Candidate:
-    id:str; text:str; breadcrumb:str=""; parent_text:str=""; score:float=0.0; bm25_score:float=0.0; dense_score:float=0.0; rerank_score:float=0.0
+    id:str; text:str; breadcrumb:str=""; parent_text:str=""; source_uri:str=""; score:float=0.0; bm25_score:float=0.0; dense_score:float=0.0; rerank_score:float=0.0
 
 def tokenize(text:str)->list[str]: return re.findall(r"[\u4e00-\u9fff]|[a-z0-9_]+",text.lower())
 
@@ -35,4 +35,3 @@ def recall_at_k(retrieved:list[str],relevant:set[str],k:int)->float:return sum(x
 def reciprocal_rank(retrieved:list[str],relevant:set[str])->float:return next((1/i for i,x in enumerate(retrieved,1) if x in relevant),0.0)
 def ndcg_at_k(retrieved:list[str],relevant:set[str],k:int)->float:
     dcg=sum((1 if x in relevant else 0)/math.log2(i+1) for i,x in enumerate(retrieved[:k],1));ideal=sum(1/math.log2(i+1) for i in range(1,min(k,len(relevant))+1));return dcg/ideal if ideal else 0
-

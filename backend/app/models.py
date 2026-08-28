@@ -25,6 +25,7 @@ class Document(Base):
     title:Mapped[str]=mapped_column(String(500))
     content_hash:Mapped[str]=mapped_column(String(64),index=True)
     version:Mapped[int]=mapped_column(Integer,default=1)
+    active:Mapped[bool]=mapped_column(Boolean,default=True,index=True)
     metadata_json:Mapped[dict]=mapped_column(JSON,default=dict)
     created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),server_default=func.now())
     __table_args__=(UniqueConstraint("knowledge_base_id","source_uri","version"),)
@@ -71,6 +72,7 @@ class FeedbackMemory(Base):
     __tablename__="feedback_memories"
     id:Mapped[uuid.UUID]=mapped_column(UUID(as_uuid=True),primary_key=True,default=uuid.uuid4)
     user_id:Mapped[str]=mapped_column(String(200),index=True)
+    knowledge_base_id:Mapped[uuid.UUID|None]=mapped_column(ForeignKey("knowledge_bases.id",ondelete="CASCADE"),nullable=True,index=True)
     correction:Mapped[str]=mapped_column(Text)
     reason:Mapped[str]=mapped_column(Text)
     scope:Mapped[str]=mapped_column(String(500),index=True)
@@ -88,4 +90,3 @@ class EvalRun(Base):
     metrics:Mapped[dict]=mapped_column(JSON,default=dict)
     passed:Mapped[bool]=mapped_column(Boolean,default=False)
     created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),server_default=func.now())
-
