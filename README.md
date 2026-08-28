@@ -1,100 +1,66 @@
-# vinext-starter
+# RAGForge
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+生产级 Agent 知识引擎：文档增量构建、Parent-Child 检索、Hybrid Retrieval、反馈记忆、RAG 评测和 OpenTelemetry 全链路观测。
 
-## Prerequisites
+## 架构
 
-- Node.js `>=22.13.0`
+- `app/`：React/Vinext 管理工作台
+- `backend/app/main.py`：FastAPI API
+- PostgreSQL + pgvector：业务数据、父子块和向量索引
+- Redis + Celery：防抖批处理、可靠任务、失败重试
+- OpenTelemetry Collector + Jaeger：Agent/检索/LLM 嵌套 Span
+- OpenAI-compatible models：Query Rewrite、Embedding 和回答生成
 
-## Quick Start
+## 本地启动
 
 ```bash
+cp .env.example .env
+# 在 .env 中设置 OPENAI_API_KEY
+docker compose up --build
 npm install
 npm run dev
+```
+
+- 工作台：http://localhost:3000
+- API 文档：http://localhost:8000/docs
+- Jaeger Trace Viewer：http://localhost:16686
+
+创建知识库后，将返回的 ID 写入前端环境变量：
+
+```env
+NEXT_PUBLIC_RAGFORGE_API_URL=http://localhost:8000
+NEXT_PUBLIC_RAGFORGE_KB_ID=<knowledge-base-uuid>
+```
+
+## 真实处理链路
+
+1. `POST /api/v1/knowledge-bases/{id}/documents` 将变化写入不可变事件账本。
+2. `POST /api/v1/knowledge-bases/{id}/compile` 创建镜像版本并延迟触发批处理。
+3. Celery Worker 使用条件 `UPDATE ... RETURNING` 获取 CAS 租约；相同版本只能由一个 Worker 处理。
+4. Worker 聚合同一 URI 的最新变化、按内容哈希跳过未变化文档、生成 Parent/Child 块与标题 Breadcrumb。
+5. Child 块生成向量；查询时执行 BM25、pgvector cosine search、RRF 和最终重排。
+6. 命中 Child 后返回 Parent 正文，保持精确召回和上下文完整。
+7. Agent 回答包含来源、Token usage 与 traceId；所有阶段均生成嵌套 Span。
+
+## 反馈记忆
+
+反馈默认进入 `pending`，只有人工 `accepted` 后才生成向量并参与后续会话注入；记录包含纠正、原因、作用域、置信度与审核时间。
+
+## 评测
+
+`POST /api/v1/evaluations` 接受带 `relevant_chunk_ids` 的标注 QA，真实计算 Recall@K、Precision@K、MRR、NDCG@K，并以可配置门禁判定是否通过。
+
+## 测试与构建
+
+```bash
+PYTHONPATH=backend python -m pytest backend/tests -q
 npm run build
+docker compose config
 ```
 
-This starter does not use `wrangler.jsonc`.
+## 生产注意事项
 
-## Included Shape
-
-- edit site code under `app/`
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/schema.ts` starts intentionally empty
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
-
-## Workspace Auth Headers
-
-Signed-in visitors receive both `oai-authenticated-user-id` and `oai-authenticated-user-email`. Private Sites require every visitor to sign in; public Sites may also have anonymous visitors, for whom neither header is present.
-
-The user ID is stable for the same user on the same Site and different across Sites. Email and name are intended for display or contact purposes.
-
-SIWC-authenticated workspace sites may also receive
-`oai-authenticated-user-full-name` when the user's SIWC profile has a non-empty
-`name` claim. The full-name value is percent-encoded UTF-8 and is accompanied by
-`oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
-
-Treat the full name as optional and fall back to email when it is absent:
-
-```tsx
-import { headers } from "next/headers";
-
-export default async function Home() {
-  const requestHeaders = await headers();
-  const userId = requestHeaders.get("oai-authenticated-user-id");
-  const email = requestHeaders.get("oai-authenticated-user-email");
-  const encodedFullName = requestHeaders.get("oai-authenticated-user-full-name");
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get("oai-authenticated-user-full-name-encoding") ===
-      "percent-encoded-utf-8"
-      ? decodeURIComponent(encodedFullName)
-      : null;
-
-  const displayName = fullName ?? email;
-  // ...
-}
-```
-
-## Optional Dispatch-Owned ChatGPT Sign-In
-
-Import the ready-to-use helpers from `app/chatgpt-auth.ts` when the site needs
-optional or required ChatGPT sign-in:
-
-- Use `getChatGPTUser()` for optional signed-in UI.
-- Use `requireChatGPTUser(returnTo)` for server-rendered pages that should send
-  anonymous visitors through Sign in with ChatGPT.
-- Use `chatGPTSignInPath(returnTo)` and `chatGPTSignOutPath(returnTo)` for
-  browser links or actions.
-- Pass a same-origin relative `returnTo` path for the destination after sign-in
-  or sign-out. The helper validates and safely encodes it.
-- Mark protected pages with `export const dynamic = "force-dynamic"` because
-  they depend on per-request identity headers.
-
-Dispatch owns `/signin-with-chatgpt`, `/signout-with-chatgpt`, `/callback`, the
-OAuth cookies, and identity header injection. Do not implement app routes for
-those reserved paths. Routes that do not import and call the helper remain
-anonymous-compatible.
-
-SIWC establishes identity only; it does not prove workspace membership. Use the
-Sites hosting platform's access policy controls for workspace-wide restrictions,
-or enforce explicit server-side membership or allowlist checks.
-
-Use SIWC for account pages, user-specific dashboards, saved records, and write
-actions tied to the current ChatGPT user. Leave public content anonymous.
-
-## Useful Commands
-
-- `npm run dev`: start local development
-- `npm run build`: verify the vinext build output
-- `npm test`: build the starter and verify its rendered loading skeleton
-- `npm run db:generate`: generate Drizzle migrations after schema changes
-
-## Learn More
-
-- [vinext Documentation](https://github.com/cloudflare/vinext)
-- [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+- 将数据库和 Redis 密码改为 Secret，并启用 TLS、备份和网络隔离。
+- API 部署为至少两个实例；Worker 独立扩缩容。
+- 为外部模型配置限流、超时、预算与熔断。
+- 在线工作台只部署前端；FastAPI/PostgreSQL/Redis/Collector 需部署在容器平台，再通过私有网络或 HTTPS API 连接。

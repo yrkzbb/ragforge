@@ -1,4 +1,5 @@
 @import "tailwindcss";
+.status-dot.offline{background:#d0953b}
 
 :root{--ink:#18201c;--muted:#768079;--line:#e5e9e5;--green:#155c42;--cream:#f6f7f3;--white:#fff}
 
