@@ -4,6 +4,7 @@ import "./console.css";
 import "./overrides.css";
 import "./agent-loop.css";
 import "./chat-polish.css";
+import "./chat-position-fix.css";
 import FeedbackDialogHost from "./feedback-dialog";
 
 const geistSans = Geist({
