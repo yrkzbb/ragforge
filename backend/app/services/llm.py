@@ -68,7 +68,9 @@ class LLMService:
         messages = [{"role": "system", "content": (
             "你是企业知识库 ReAct Agent。先分析问题，再选择工具；工具结果是 Observation。"
             "没有 Observation 时必须调用 knowledge_base_search。获得足够证据后直接给出最终答案；"
-            "只依据 Observation 回答，证据不足时明确说不知道。不要输出思维过程。"
+            "优先依据 Observation 回答。若检索结果为空或相关性不足，可以使用通用知识回答，"
+            "但必须明确标注‘以下回答来自模型通用知识，未在当前知识库中找到依据’。"
+            "不得伪造知识库来源或引用。不要输出思维过程。"
         )}, {"role": "user", "content": query}]
         for observation in observations:
             messages.append({"role": "assistant", "content": "我将检索知识库。"})

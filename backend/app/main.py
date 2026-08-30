@@ -1,4 +1,6 @@
 from datetime import datetime,timezone
+import json
+from pathlib import Path
 from uuid import UUID
 from fastapi import Depends,FastAPI,HTTPException,Request,Query
 from fastapi.responses import Response
@@ -69,6 +71,22 @@ async def dashboard(db:AsyncSession=Depends(get_db)):
     latest_eval=await db.scalar(select(EvalRun).order_by(EvalRun.created_at.desc()).limit(1))
     return {"knowledge_bases":rows,"totals":{"knowledge_bases":len(rows),"documents":sum(x["documents"] for x in rows),"chunks":sum(x["chunks"] for x in rows),"pending_events":sum(x["pending_events"] for x in rows)},"feedback":feedback_counts,"latest_evaluation":{"dataset_name":latest_eval.dataset_name,"metrics":latest_eval.metrics,"passed":latest_eval.passed,"created_at":latest_eval.created_at} if latest_eval else None}
 
+@app.get("/api/v1/knowledge-bases/{kb_id}/documents")
+async def list_documents(kb_id:UUID,db:AsyncSession=Depends(get_db)):
+    if not await db.get(KnowledgeBase,kb_id):raise HTTPException(404,"knowledge base not found")
+    docs=(await db.scalars(select(Document).where(Document.knowledge_base_id==kb_id,Document.active.is_(True)).order_by(Document.created_at.desc()))).all()
+    rows=[]
+    for doc in docs:
+        chunks=(await db.scalars(select(Chunk).where(Chunk.document_id==doc.id,Chunk.level=="child").order_by(Chunk.ordinal))).all()
+        rows.append({"id":doc.id,"title":doc.title,"source_uri":doc.source_uri,"version":doc.version,"created_at":doc.created_at,"chunks":[{"id":c.id,"ordinal":c.ordinal,"breadcrumb":c.breadcrumb,"text":c.text,"token_count":c.token_count} for c in chunks]})
+    return rows
+
+@app.get("/api/v1/eval-dataset")
+async def eval_dataset(offset:int=Query(0,ge=0),limit:int=Query(50,ge=1,le=300)):
+    path=Path(__file__).resolve().parents[1]/"eval_data"/"qa.jsonl"
+    rows=[json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return {"total":len(rows),"offset":offset,"items":rows[offset:offset+limit]}
+
 @app.post("/api/v1/knowledge-bases/{kb_id}/documents",status_code=202)
 async def ingest(kb_id:UUID,body:DocumentIngest,db:AsyncSession=Depends(get_db)):
     if not await db.get(KnowledgeBase,kb_id):raise HTTPException(404,"knowledge base not found")
@@ -127,8 +145,11 @@ async def chat(body:ChatRequest,request:Request,db:AsyncSession=Depends(get_db))
             for key,value in (("input",usage["input_tokens"]),("output",usage["output_tokens"])):TOKEN_USAGE.labels(key,settings.chat_model).inc(value)
             LLM_COST.labels(settings.chat_model).inc(cost)
             span.set_attribute("agent.iterations",result.iterations)
+            span.set_attribute("agent.usage.input_tokens",usage["input_tokens"])
+            span.set_attribute("agent.usage.output_tokens",usage["output_tokens"])
+            span.set_attribute("agent.usage.estimated_cost_usd",cost)
             AGENT_REQUESTS.labels("chat","ok").inc()
-            return {"answer":answer,"sources":[{"chunk_id":c.id,"breadcrumb":c.breadcrumb,"score":c.rerank_score} for c in contexts],"memory_ids":[str(item.id) for item in memory_items],"handoffs":result.handoffs,"iterations":result.iterations,"usage":{**usage,"estimated_cost_usd":cost},"trace_id":format(span.get_span_context().trace_id,"032x")}
+            return {"answer":answer,"sources":[{"chunk_id":c.id,"breadcrumb":c.breadcrumb,"source_uri":c.source_uri,"text":c.parent_text or c.text,"score":c.rerank_score} for c in contexts[:3]],"memory_ids":[str(item.id) for item in memory_items],"handoffs":result.handoffs,"iterations":result.iterations,"usage":{**usage,"estimated_cost_usd":cost},"trace_id":format(span.get_span_context().trace_id,"032x")}
         except AgentExecutionError as exc:
             AGENT_REQUESTS.labels("chat","error").inc();span.record_exception(exc);span.set_status(Status(StatusCode.ERROR,str(exc)));raise HTTPException(503,str(exc)) from exc
         except TimeoutError as exc:
