@@ -23,6 +23,7 @@ class Document(Base):
     knowledge_base_id:Mapped[uuid.UUID]=mapped_column(ForeignKey("knowledge_bases.id",ondelete="CASCADE"),index=True)
     source_uri:Mapped[str]=mapped_column(String(1000))
     title:Mapped[str]=mapped_column(String(500))
+    original_text:Mapped[str|None]=mapped_column(Text,nullable=True)
     content_hash:Mapped[str]=mapped_column(String(64),index=True)
     version:Mapped[int]=mapped_column(Integer,default=1)
     active:Mapped[bool]=mapped_column(Boolean,default=True,index=True)

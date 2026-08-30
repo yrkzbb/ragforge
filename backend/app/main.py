@@ -1,5 +1,6 @@
 from datetime import datetime,timezone
 import json
+import re
 from pathlib import Path
 from uuid import UUID
 from fastapi import Depends,FastAPI,HTTPException,Request,Query
@@ -26,6 +27,29 @@ from .worker import compile_knowledge_base
 settings=get_settings();tracer=configure_telemetry();app=FastAPI(title="RAGForge API",version="1.0.0",docs_url="/docs")
 app.add_middleware(CORSMiddleware,allow_origins=settings.cors_origins.split(","),allow_credentials=True,allow_methods=["*"],allow_headers=["*"])
 FastAPIInstrumentor.instrument_app(app,tracer_provider=trace.get_tracer_provider())
+
+def source_relevance(query:str,text:str)->float:
+    """Return a bounded, explainable query/content overlap score for citations."""
+    def terms(value:str)->set[str]:
+        value=re.sub(r"[^0-9a-z\u4e00-\u9fff]+","",value.lower())
+        for stop in ("是什么","有哪些","为什么","怎么","如何","关于","相关","内容","重点","的"):
+            value=value.replace(stop,"")
+        return {value[i:i+2] for i in range(max(len(value)-1,0)) if value[i:i+2]}
+    query_terms=terms(query)
+    if not query_terms:return 0.0
+    content_terms=terms(text)
+    return round(min(1.0,len(query_terms&content_terms)/len(query_terms)),4)
+
+def grounded_sources(query:str,answer:str,contexts:list)->list[dict]:
+    no_evidence=("未找到" in answer or "没有找到" in answer) and ("知识库" in answer or "相关内容" in answer)
+    if no_evidence:return []
+    rows=[]
+    for item in contexts:
+        text=item.parent_text or item.text
+        relevance=source_relevance(query,f"{item.breadcrumb}\n{text}")
+        if relevance<0.2:continue
+        rows.append({"chunk_id":item.id,"breadcrumb":item.breadcrumb,"source_uri":item.source_uri,"text":text,"relevance":relevance,"retrieval_score":item.rerank_score})
+    return sorted(rows,key=lambda row:row["relevance"],reverse=True)[:3]
 
 @app.get("/health")
 async def health(db:AsyncSession=Depends(get_db)):
@@ -78,7 +102,7 @@ async def list_documents(kb_id:UUID,db:AsyncSession=Depends(get_db)):
     rows=[]
     for doc in docs:
         chunks=(await db.scalars(select(Chunk).where(Chunk.document_id==doc.id,Chunk.level=="child").order_by(Chunk.ordinal))).all()
-        rows.append({"id":doc.id,"title":doc.title,"source_uri":doc.source_uri,"version":doc.version,"created_at":doc.created_at,"chunks":[{"id":c.id,"ordinal":c.ordinal,"breadcrumb":c.breadcrumb,"text":c.text,"token_count":c.token_count} for c in chunks]})
+        rows.append({"id":doc.id,"title":doc.title,"source_uri":doc.source_uri,"version":doc.version,"created_at":doc.created_at,"original_text":doc.original_text,"metadata":doc.metadata_json,"chunks":[{"id":c.id,"ordinal":c.ordinal,"breadcrumb":c.breadcrumb,"text":c.text,"token_count":c.token_count} for c in chunks]})
     return rows
 
 @app.get("/api/v1/eval-dataset")
@@ -149,7 +173,7 @@ async def chat(body:ChatRequest,request:Request,db:AsyncSession=Depends(get_db))
             span.set_attribute("agent.usage.output_tokens",usage["output_tokens"])
             span.set_attribute("agent.usage.estimated_cost_usd",cost)
             AGENT_REQUESTS.labels("chat","ok").inc()
-            return {"answer":answer,"sources":[{"chunk_id":c.id,"breadcrumb":c.breadcrumb,"source_uri":c.source_uri,"text":c.parent_text or c.text,"score":c.rerank_score} for c in contexts[:3]],"memory_ids":[str(item.id) for item in memory_items],"handoffs":result.handoffs,"iterations":result.iterations,"usage":{**usage,"estimated_cost_usd":cost},"trace_id":format(span.get_span_context().trace_id,"032x")}
+            return {"answer":answer,"sources":grounded_sources(body.message,answer,contexts),"memory_ids":[str(item.id) for item in memory_items],"handoffs":result.handoffs,"iterations":result.iterations,"usage":{**usage,"estimated_cost_usd":cost},"trace_id":format(span.get_span_context().trace_id,"032x")}
         except AgentExecutionError as exc:
             AGENT_REQUESTS.labels("chat","error").inc();span.record_exception(exc);span.set_status(Status(StatusCode.ERROR,str(exc)));raise HTTPException(503,str(exc)) from exc
         except TimeoutError as exc:

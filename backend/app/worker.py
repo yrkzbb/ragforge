@@ -38,7 +38,7 @@ async def _compile(job_id:str):
                 previous=(await db.scalars(select(Document).where(Document.knowledge_base_id==job.knowledge_base_id,Document.source_uri==event.source_uri,Document.active.is_(True)))).all()
                 next_version=max((item.version for item in previous),default=0)+1
                 for item in previous:item.active=False
-                doc=Document(knowledge_base_id=job.knowledge_base_id,source_uri=event.source_uri,title=payload["title"],content_hash=digest,version=next_version,active=True,metadata_json=payload.get("metadata",{}));db.add(doc);await db.flush()
+                doc=Document(knowledge_base_id=job.knowledge_base_id,source_uri=event.source_uri,title=payload["title"],original_text=text,content_hash=digest,version=next_version,active=True,metadata_json=payload.get("metadata",{}));db.add(doc);await db.flush()
                 drafts=parent_child_chunks(text,payload["title"]);parent_map={};children=[]
                 for draft in drafts:
                     chunk=Chunk(document_id=doc.id,ordinal=draft.ordinal,level=draft.level,breadcrumb=draft.breadcrumb,text=draft.text,token_count=len(draft.text))
