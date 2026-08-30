@@ -11,6 +11,25 @@ class Base(DeclarativeBase): pass
 class BuildState(str, enum.Enum): queued="queued"; leased="leased"; running="running"; succeeded="succeeded"; failed="failed"
 class FeedbackState(str, enum.Enum): pending="pending"; accepted="accepted"; rejected="rejected"
 
+class Conversation(Base):
+    __tablename__="conversations"
+    id:Mapped[uuid.UUID]=mapped_column(UUID(as_uuid=True),primary_key=True,default=uuid.uuid4)
+    client_id:Mapped[str]=mapped_column(String(100),unique=True,index=True)
+    user_id:Mapped[str]=mapped_column(String(200),index=True)
+    knowledge_base_id:Mapped[uuid.UUID|None]=mapped_column(ForeignKey("knowledge_bases.id",ondelete="SET NULL"),nullable=True,index=True)
+    title:Mapped[str]=mapped_column(String(300),default="新任务")
+    created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),server_default=func.now())
+    updated_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),server_default=func.now(),onupdate=func.now(),index=True)
+
+class ConversationMessage(Base):
+    __tablename__="conversation_messages"
+    id:Mapped[uuid.UUID]=mapped_column(UUID(as_uuid=True),primary_key=True,default=uuid.uuid4)
+    conversation_id:Mapped[uuid.UUID]=mapped_column(ForeignKey("conversations.id",ondelete="CASCADE"),index=True)
+    role:Mapped[str]=mapped_column(String(20))
+    content:Mapped[str]=mapped_column(Text)
+    payload:Mapped[dict]=mapped_column(JSON,default=dict)
+    created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),server_default=func.now(),index=True)
+
 class KnowledgeBase(Base):
     __tablename__="knowledge_bases"
     id:Mapped[uuid.UUID]=mapped_column(UUID(as_uuid=True),primary_key=True,default=uuid.uuid4)

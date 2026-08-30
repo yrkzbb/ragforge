@@ -10,5 +10,7 @@ class SearchRequest(BaseModel): query:str=Field(min_length=1); knowledge_base_id
 class FeedbackCreate(BaseModel): user_id:str; knowledge_base_id:UUID|None=None; correction:str; reason:str; scope:str; confidence:float=Field(.8,ge=0,le=1); source_trace_id:str|None=Field(None,max_length=64)
 class FeedbackReview(BaseModel): accepted:bool
 class ChatRequest(BaseModel): user_id:str; knowledge_base_id:UUID; message:str; conversation_id:str|None=None
+class ConversationUpsert(BaseModel): client_id:str=Field(min_length=1,max_length=100); user_id:str="web-user"; knowledge_base_id:UUID|None=None; title:str=Field("新任务",max_length=300); messages:list[dict]=Field(default_factory=list)
+class ConversationRename(BaseModel): title:str=Field(min_length=1,max_length=300)
 class EvalExample(BaseModel): query:str; relevant_chunk_ids:list[str]=[]; relevant_source_uris:list[str]=[]
 class EvalRequest(BaseModel): knowledge_base_id:UUID; dataset_name:str; examples:list[EvalExample]; k:int=Field(10,ge=1,le=50); retrieve_k:int=Field(30,ge=5,le=100); mode:RetrievalMode="bm25_rewrite"

@@ -1,4 +1,4 @@
-from datetime import datetime,timezone
+from datetime import datetime,timedelta,timezone
 import json
 import re
 from pathlib import Path
@@ -15,8 +15,8 @@ from sqlalchemy import func,select
 from sqlalchemy.ext.asyncio import AsyncSession
 from .config import get_settings
 from .db import get_db
-from .models import BuildJob,BuildState,ChangeEvent,Chunk,Document,EvalRun,FeedbackMemory,FeedbackState,KnowledgeBase
-from .schemas import ChatRequest,DocumentIngest,EvalRequest,FeedbackCreate,FeedbackReview,KnowledgeBaseCreate,SearchRequest
+from .models import BuildJob,BuildState,ChangeEvent,Chunk,Conversation,ConversationMessage,Document,EvalRun,FeedbackMemory,FeedbackState,KnowledgeBase
+from .schemas import ChatRequest,ConversationRename,ConversationUpsert,DocumentIngest,EvalRequest,FeedbackCreate,FeedbackReview,KnowledgeBaseCreate,SearchRequest
 from .services.llm import LLMService
 from .services.retrieval import ndcg_at_k,precision_at_k,recall_at_k,reciprocal_rank
 from .services.search import SearchService
@@ -48,7 +48,7 @@ def grounded_sources(query:str,answer:str,contexts:list)->list[dict]:
         text=item.parent_text or item.text
         relevance=source_relevance(query,f"{item.breadcrumb}\n{text}")
         if relevance<0.2:continue
-        rows.append({"chunk_id":item.id,"breadcrumb":item.breadcrumb,"source_uri":item.source_uri,"text":text,"relevance":relevance,"retrieval_score":item.rerank_score})
+        rows.append({"chunk_id":str(item.id),"breadcrumb":item.breadcrumb,"source_uri":item.source_uri,"text":text,"relevance":relevance,"retrieval_score":item.rerank_score})
     return sorted(rows,key=lambda row:row["relevance"],reverse=True)[:3]
 
 @app.get("/health")
@@ -57,6 +57,37 @@ async def health(db:AsyncSession=Depends(get_db)):
 
 @app.get("/metrics",include_in_schema=False)
 async def metrics():return Response(generate_latest(),media_type=CONTENT_TYPE_LATEST)
+
+@app.get("/api/v1/conversations")
+async def list_conversations(user_id:str="web-user",db:AsyncSession=Depends(get_db)):
+    rows=(await db.scalars(select(Conversation).where(Conversation.user_id==user_id).order_by(Conversation.updated_at.desc()))).all()
+    return [{"client_id":x.client_id,"title":x.title,"knowledge_base_id":x.knowledge_base_id,"created_at":x.created_at,"updated_at":x.updated_at} for x in rows]
+
+@app.put("/api/v1/conversations/{client_id}")
+async def upsert_conversation(client_id:str,body:ConversationUpsert,db:AsyncSession=Depends(get_db)):
+    row=await db.scalar(select(Conversation).where(Conversation.client_id==client_id))
+    if not row:
+        row=Conversation(client_id=client_id,user_id=body.user_id,knowledge_base_id=body.knowledge_base_id,title=body.title);db.add(row);await db.flush()
+        imported_at=datetime.now(timezone.utc)
+        for index,message in enumerate(body.messages):
+            role=str(message.get("role","assistant"));content=str(message.get("text",message.get("content","")))
+            if content:db.add(ConversationMessage(conversation_id=row.id,role=role,content=content,payload={k:v for k,v in message.items() if k not in ("role","text","content")},created_at=imported_at+timedelta(microseconds=index)))
+    else:
+        row.title=body.title;row.knowledge_base_id=body.knowledge_base_id or row.knowledge_base_id;row.updated_at=datetime.now(timezone.utc)
+    await db.commit();return {"client_id":row.client_id,"title":row.title}
+
+@app.get("/api/v1/conversations/{client_id}")
+async def get_conversation(client_id:str,db:AsyncSession=Depends(get_db)):
+    row=await db.scalar(select(Conversation).where(Conversation.client_id==client_id))
+    if not row:raise HTTPException(404,"conversation not found")
+    messages=(await db.scalars(select(ConversationMessage).where(ConversationMessage.conversation_id==row.id).order_by(ConversationMessage.created_at,ConversationMessage.id))).all()
+    return {"client_id":row.client_id,"title":row.title,"knowledge_base_id":row.knowledge_base_id,"messages":[{"role":m.role,"text":m.content,**(m.payload or {})} for m in messages]}
+
+@app.patch("/api/v1/conversations/{client_id}")
+async def rename_conversation(client_id:str,body:ConversationRename,db:AsyncSession=Depends(get_db)):
+    row=await db.scalar(select(Conversation).where(Conversation.client_id==client_id))
+    if not row:raise HTTPException(404,"conversation not found")
+    row.title=body.title;row.updated_at=datetime.now(timezone.utc);await db.commit();return {"client_id":row.client_id,"title":row.title}
 
 @app.get("/api/v1/traces")
 async def traces(limit:int=Query(20,ge=1,le=100),service:str="ragforge-api",trace_id:str|None=Query(None,pattern=r"^[0-9a-fA-F]{32}$")):
@@ -162,6 +193,14 @@ async def list_feedback(limit:int=Query(50,ge=1,le=200),db:AsyncSession=Depends(
 async def chat(body:ChatRequest,request:Request,db:AsyncSession=Depends(get_db)):
     with AGENT_LATENCY.labels("chat").time(),tracer.start_as_current_span("agent.session") as span:
         span.set_attribute("agent.user_id",body.user_id);span.set_attribute("agent.conversation_id",body.conversation_id or "new")
+        conversation=None
+        if body.conversation_id:
+            conversation=await db.scalar(select(Conversation).where(Conversation.client_id==body.conversation_id))
+            if not conversation:
+                conversation=Conversation(client_id=body.conversation_id,user_id=body.user_id,knowledge_base_id=body.knowledge_base_id,title="新任务");db.add(conversation);await db.flush()
+            conversation.updated_at=datetime.now(timezone.utc)
+            db.add(ConversationMessage(conversation_id=conversation.id,role="user",content=body.message,payload={}))
+            await db.commit()
         try:
             result=await ReActAgent(db,tracer).run(body)
             answer,contexts,memory_items,usage=result.answer,result.contexts,result.memory_items,result.usage
@@ -173,7 +212,10 @@ async def chat(body:ChatRequest,request:Request,db:AsyncSession=Depends(get_db))
             span.set_attribute("agent.usage.output_tokens",usage["output_tokens"])
             span.set_attribute("agent.usage.estimated_cost_usd",cost)
             AGENT_REQUESTS.labels("chat","ok").inc()
-            return {"answer":answer,"sources":grounded_sources(body.message,answer,contexts),"memory_ids":[str(item.id) for item in memory_items],"handoffs":result.handoffs,"iterations":result.iterations,"loop_steps":result.loop_steps,"status":result.status,"usage":{**usage,"estimated_cost_usd":cost},"trace_id":format(span.get_span_context().trace_id,"032x")}
+            response={"answer":answer,"sources":grounded_sources(body.message,answer,contexts),"memory_ids":[str(item.id) for item in memory_items],"handoffs":result.handoffs,"iterations":result.iterations,"loop_steps":result.loop_steps,"status":result.status,"usage":{**usage,"estimated_cost_usd":cost},"trace_id":format(span.get_span_context().trace_id,"032x")}
+            if conversation:
+                db.add(ConversationMessage(conversation_id=conversation.id,role="assistant",content=answer,payload={"traceId":response["trace_id"],"sources":response["sources"],"usage":response["usage"],"loopSteps":response["loop_steps"],"executionStatus":response["status"]}));conversation.updated_at=datetime.now(timezone.utc);await db.commit()
+            return response
         except AgentExecutionError as exc:
             AGENT_REQUESTS.labels("chat","error").inc();span.record_exception(exc);span.set_status(Status(StatusCode.ERROR,str(exc)));raise HTTPException(503,str(exc)) from exc
         except TimeoutError as exc:
