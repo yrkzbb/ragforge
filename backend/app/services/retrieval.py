@@ -20,10 +20,12 @@ def bm25(query:str,documents:list[Candidate],k1:float=1.5,b:float=.75)->list[Can
         d.bm25_score=score
     return sorted(documents,key=lambda x:x.bm25_score,reverse=True)
 
-def rrf(rankings:list[list[Candidate]],k:int=60)->list[Candidate]:
+def rrf(rankings:list[list[Candidate]],k:int=60,weights:list[float]|None=None)->list[Candidate]:
+    weights=weights or [1.0]*len(rankings)
+    if len(weights)!=len(rankings):raise ValueError("one RRF weight is required per ranking")
     merged:dict[str,Candidate]={};scores=Counter()
-    for ranking in rankings:
-        for rank,item in enumerate(ranking,1): merged[item.id]=item;scores[item.id]+=1/(k+rank)
+    for ranking,weight in zip(rankings,weights,strict=True):
+        for rank,item in enumerate(ranking,1): merged[item.id]=item;scores[item.id]+=weight/(k+rank)
     for key,item in merged.items(): item.score=scores[key]
     return sorted(merged.values(),key=lambda x:x.score,reverse=True)
 

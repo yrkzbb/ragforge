@@ -12,6 +12,20 @@ DOMAINS = [
     ("业务连续性", "应急预案"),
 ]
 
+DOMAIN_ALIASES = {
+    "人力资源": "HR",
+    "信息安全": "数据防护",
+    "财务管理": "费用管控",
+    "客户服务": "客诉支持",
+    "研发工程": "技术研发",
+    "采购管理": "供应商采买",
+    "市场运营": "增长运营",
+    "法务合规": "法律风控",
+    "行政管理": "综合事务",
+    "业务连续性": "灾备恢复",
+}
+CHINESE_NUMBERS = ("一", "二", "三", "四", "五", "六", "七", "八", "九", "十")
+
 
 def build_document(domain: str, series: str, index: int) -> tuple[str, str, list[dict]]:
     title = f"{domain}{series}第{index:02d}号"
@@ -34,7 +48,7 @@ def build_document(domain: str, series: str, index: int) -> tuple[str, str, list
     return title, text, qa
 
 
-def generate(output_dir: Path) -> tuple[Path, Path]:
+def generate(output_dir: Path) -> tuple[Path, Path, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     documents, questions = [], []
     for domain_index, (domain, series) in enumerate(DOMAINS, start=1):
@@ -51,13 +65,25 @@ def generate(output_dir: Path) -> tuple[Path, Path]:
                     "qa_id": f"qa-{domain_index:02d}-{index:02d}-{question_index}",
                     "document_id": document_id, "source_uri": source_uri, **item,
                 })
-    document_path, qa_path = output_dir / "documents.jsonl", output_dir / "qa.jsonl"
-    for path, rows in ((document_path, documents), (qa_path, questions)):
+    hard_questions = []
+    for item in questions:
+        _, domain_index, document_index, question_index = item["qa_id"].split("-")
+        domain = DOMAINS[int(domain_index) - 1][0]
+        alias = DOMAIN_ALIASES[domain]
+        number = CHINESE_NUMBERS[int(document_index) - 1]
+        templates = {
+            "1": f"办理{alias}{number}号事项，材料最少要预留几个工作日？",
+            "2": f"{alias}{number}号事项的受理、复核和归档归哪支团队管？",
+            "3": f"{alias}{number}号流程出问题后，应该走哪个工单入口？",
+        }
+        hard_questions.append({**item, "qa_id": f"hard-{item['qa_id']}", "question": templates[question_index], "difficulty": "lexical-hard"})
+    document_path, qa_path, hard_path = output_dir / "documents.jsonl", output_dir / "qa.jsonl", output_dir / "qa_hard.jsonl"
+    for path, rows in ((document_path, documents), (qa_path, questions), (hard_path, hard_questions)):
         path.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
-    return document_path, qa_path
+    return document_path, qa_path, hard_path
 
 
 if __name__ == "__main__":
     root = Path(__file__).resolve().parents[1]
-    docs, qa = generate(root / "eval_data")
-    print(f"generated {docs} and {qa}")
+    docs, qa, hard = generate(root / "eval_data")
+    print(f"generated {docs}, {qa}, and {hard}")

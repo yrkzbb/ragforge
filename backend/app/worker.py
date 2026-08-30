@@ -8,7 +8,7 @@ from sqlalchemy import select,update
 from sqlalchemy.ext.asyncio import async_sessionmaker,create_async_engine
 from .config import get_settings
 from .models import BuildJob,BuildState,ChangeEvent,Chunk,Document
-from .services.chunking import parent_child_chunks
+from .services.chunking import embedding_text,parent_child_chunks
 from .services.llm import LLMService
 
 settings=get_settings();celery_app=Celery("ragforge",broker=settings.redis_url,backend=settings.redis_url)
@@ -46,7 +46,7 @@ async def _compile(job_id:str):
                     else:chunk.parent_id=parent_map[draft.parent_ordinal];children.append(chunk);db.add(chunk)
                 await db.flush()
                 try:
-                    vectors=await llm.embed([c.text for c in children])
+                    vectors=await llm.embed([embedding_text(c.breadcrumb,c.text) for c in children])
                     for chunk,vector in zip(children,vectors):chunk.embedding=vector
                 except RuntimeError:pass
                 processed+=1

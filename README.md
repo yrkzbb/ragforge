@@ -8,6 +8,8 @@
 - `backend/app/main.py`：FastAPI API
 - PostgreSQL + pgvector：业务数据、父子块和向量索引
 - Redis + Celery：防抖批处理、可靠任务、失败重试
+- ReAct Agent：问题分析、知识库工具调用、Observation 回填与答案生成；支持最大迭代、节点超时和指数退避重试
+- 长文档检索：Parent-Child Chunk 使用子块检索、父块补全上下文，并将完整标题层级注入子块 Embedding
 - OpenTelemetry Collector + Jaeger：Agent/检索/LLM 嵌套 Span
 - OpenAI-compatible models：Query Rewrite、Embedding 和回答生成
 - ONNX 中英 CrossEncoder：MIT 许可的 `BAAI/bge-reranker-base` 本地精排，无需 API Key

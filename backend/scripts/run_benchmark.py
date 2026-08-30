@@ -42,6 +42,7 @@ def main():
         result = client.post("/api/v1/evaluations", json={
             "knowledge_base_id": kb["id"], "dataset_name": "ragforge-zh-v1",
             "examples": examples, "k": 10,
+            "retrieve_k": 30,
         }, timeout=args.timeout).raise_for_status().json()
         result["evaluated_examples"] = len(result.pop("details", []))
         print(json.dumps({"knowledge_base_id": kb["id"], **result}, ensure_ascii=False, indent=2))

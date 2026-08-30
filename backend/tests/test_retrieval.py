@@ -6,6 +6,10 @@ def test_bm25_and_rrf_rank_relevant_first():
     assert lexical[0].id=="a"
     assert rrf([lexical,[docs[1],docs[0]]])[0].id in {"a","b"}
 
+def test_weighted_rrf_can_prefer_the_trusted_ranking():
+    a,b=Candidate("a","a"),Candidate("b","b")
+    assert rrf([[a,b],[b,a]],weights=[0.75,0.25])[0].id=="a"
+
 def test_ir_metrics():
     got=["a","x","b","y"];relevant={"a","b"}
     assert recall_at_k(got,relevant,4)==1

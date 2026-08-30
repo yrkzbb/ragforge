@@ -17,7 +17,7 @@ from .schemas import ChatRequest,DocumentIngest,EvalRequest,FeedbackCreate,Feedb
 from .services.llm import LLMService
 from .services.retrieval import ndcg_at_k,precision_at_k,recall_at_k,reciprocal_rank
 from .services.search import SearchService
-from .services.memory import FeedbackMemoryService
+from .services.agent import AgentExecutionError,ReActAgent
 from .telemetry import AGENT_LATENCY,AGENT_REQUESTS,LLM_COST,TOKEN_USAGE,configure_telemetry
 from .worker import compile_knowledge_base
 
@@ -33,12 +33,21 @@ async def health(db:AsyncSession=Depends(get_db)):
 async def metrics():return Response(generate_latest(),media_type=CONTENT_TYPE_LATEST)
 
 @app.get("/api/v1/traces")
-async def traces(limit:int=Query(20,ge=1,le=100),service:str="ragforge-api"):
+async def traces(limit:int=Query(20,ge=1,le=100),service:str="ragforge-api",trace_id:str|None=Query(None,pattern=r"^[0-9a-fA-F]{32}$")):
     try:
         async with httpx.AsyncClient(timeout=5) as client:
-            response=await client.get(f"{settings.jaeger_query_url}/api/traces",params={"service":service,"limit":limit})
-            response.raise_for_status();return response.json()
-    except httpx.HTTPError as exc:raise HTTPException(503,f"trace backend unavailable: {type(exc).__name__}") from exc
+            if trace_id:
+                response=await client.get(f"{settings.jaeger_query_url}/api/traces/{trace_id.lower()}")
+            else:
+                response=await client.get(f"{settings.jaeger_query_url}/api/traces",params={"service":service,"limit":limit})
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code==404:
+            raise HTTPException(404,"trace not found") from exc
+        raise HTTPException(503,f"trace backend unavailable: HTTP {exc.response.status_code}") from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(503,f"trace backend unavailable: {type(exc).__name__}") from exc
 
 @app.post("/api/v1/knowledge-bases",status_code=201)
 async def create_kb(body:KnowledgeBaseCreate,db:AsyncSession=Depends(get_db)):
@@ -85,8 +94,8 @@ async def list_build_jobs(limit:int=Query(20,ge=1,le=100),db:AsyncSession=Depend
 
 @app.post("/api/v1/search")
 async def search(body:SearchRequest,db:AsyncSession=Depends(get_db)):
-    rewritten,results=await SearchService(db).search(body.knowledge_base_id,body.query,body.top_k,body.retrieve_k)
-    return {"query":body.query,"rewritten_query":rewritten,"results":[vars(x) for x in results]}
+    rewritten,results=await SearchService(db).search(body.knowledge_base_id,body.query,body.top_k,body.retrieve_k,body.mode)
+    return {"query":body.query,"rewritten_query":rewritten,"mode":body.mode,"results":[vars(x) for x in results]}
 
 @app.post("/api/v1/feedback",status_code=201)
 async def create_feedback(body:FeedbackCreate,db:AsyncSession=Depends(get_db)):
@@ -112,46 +121,39 @@ async def chat(body:ChatRequest,request:Request,db:AsyncSession=Depends(get_db))
     with AGENT_LATENCY.labels("chat").time(),tracer.start_as_current_span("agent.session") as span:
         span.set_attribute("agent.user_id",body.user_id);span.set_attribute("agent.conversation_id",body.conversation_id or "new")
         try:
-            with tracer.start_as_current_span("agent.handoff") as handoff:
-                handoff.set_attribute("agent.from","orchestrator");handoff.set_attribute("agent.to","retrieval-agent");handoff.set_attribute("agent.handoff.reason","knowledge_required")
-                with tracer.start_as_current_span("agent.retrieval") as retrieval_span:
-                    retrieval_span.set_attribute("agent.name","retrieval-agent")
-                    with tracer.start_as_current_span("tool.call") as tool_span:
-                        tool_span.set_attribute("tool.name","knowledge_base_search");tool_span.set_attribute("tool.type","retrieval")
-                        _,contexts=await SearchService(db).search(body.knowledge_base_id,body.message,8,30)
-                        tool_span.set_attribute("tool.result.count",len(contexts))
-                    memory_service=FeedbackMemoryService(db)
-                    memory_items=await memory_service.select_for_chat(body.user_id,body.knowledge_base_id,body.message)
-                    await memory_service.record_injections(memory_items)
-            memories=[f"适用范围：{item.scope}；纠正：{item.correction}；原因：{item.reason}" for item in memory_items]
-            with tracer.start_as_current_span("agent.handoff") as handoff:
-                handoff.set_attribute("agent.from","retrieval-agent");handoff.set_attribute("agent.to","answer-agent");handoff.set_attribute("agent.handoff.reason","context_ready")
-                with tracer.start_as_current_span("agent.answer") as answer_span:
-                    answer_span.set_attribute("agent.name","answer-agent");answer_span.set_attribute("agent.memory.count",len(memory_items))
-                    with tracer.start_as_current_span("llm.generate") as llm_span:
-                        answer,usage=await LLMService().answer(body.message,contexts,list(memories))
-                        cost=(usage["input_tokens"]*settings.chat_input_cost_per_million+usage["output_tokens"]*settings.chat_output_cost_per_million)/1_000_000
-                        for key,value in (("input",usage["input_tokens"]),("output",usage["output_tokens"])):TOKEN_USAGE.labels(key,settings.chat_model).inc(value)
-                        LLM_COST.labels(settings.chat_model).inc(cost)
-                        llm_span.set_attribute("llm.token.input",usage["input_tokens"]);llm_span.set_attribute("llm.token.output",usage["output_tokens"]);llm_span.set_attribute("llm.cost.usd",cost)
+            result=await ReActAgent(db,tracer).run(body)
+            answer,contexts,memory_items,usage=result.answer,result.contexts,result.memory_items,result.usage
+            cost=(usage["input_tokens"]*settings.chat_input_cost_per_million+usage["output_tokens"]*settings.chat_output_cost_per_million)/1_000_000
+            for key,value in (("input",usage["input_tokens"]),("output",usage["output_tokens"])):TOKEN_USAGE.labels(key,settings.chat_model).inc(value)
+            LLM_COST.labels(settings.chat_model).inc(cost)
+            span.set_attribute("agent.iterations",result.iterations)
             AGENT_REQUESTS.labels("chat","ok").inc()
-            return {"answer":answer,"sources":[{"chunk_id":c.id,"breadcrumb":c.breadcrumb,"score":c.rerank_score} for c in contexts],"memory_ids":[str(item.id) for item in memory_items],"handoffs":[{"from":"orchestrator","to":"retrieval-agent"},{"from":"retrieval-agent","to":"answer-agent"}],"usage":{**usage,"estimated_cost_usd":cost},"trace_id":format(span.get_span_context().trace_id,"032x")}
+            return {"answer":answer,"sources":[{"chunk_id":c.id,"breadcrumb":c.breadcrumb,"score":c.rerank_score} for c in contexts],"memory_ids":[str(item.id) for item in memory_items],"handoffs":result.handoffs,"iterations":result.iterations,"usage":{**usage,"estimated_cost_usd":cost},"trace_id":format(span.get_span_context().trace_id,"032x")}
+        except AgentExecutionError as exc:
+            AGENT_REQUESTS.labels("chat","error").inc();span.record_exception(exc);span.set_status(Status(StatusCode.ERROR,str(exc)));raise HTTPException(503,str(exc)) from exc
+        except TimeoutError as exc:
+            AGENT_REQUESTS.labels("chat","error").inc();span.record_exception(exc);span.set_status(Status(StatusCode.ERROR,"agent node timed out"));raise HTTPException(504,"agent node timed out") from exc
         except Exception as exc:
             AGENT_REQUESTS.labels("chat","error").inc();span.record_exception(exc);span.set_status(Status(StatusCode.ERROR,str(exc)));raise
 
 @app.post("/api/v1/evaluations")
 async def evaluate(body:EvalRequest,db:AsyncSession=Depends(get_db)):
+    if not await db.get(KnowledgeBase,body.knowledge_base_id):
+        raise HTTPException(404,"knowledge base not found")
+    active_documents=await db.scalar(select(func.count()).select_from(Document).where(Document.knowledge_base_id==body.knowledge_base_id,Document.active.is_(True))) or 0
+    if active_documents==0:
+        raise HTTPException(409,"knowledge base has no active documents; compile the benchmark corpus first")
     totals={"recall_at_k":0.0,"precision_at_k":0.0,"mrr":0.0,"ndcg_at_k":0.0};details=[]
     for ex in body.examples:
-        _,results=await SearchService(db).search(body.knowledge_base_id,ex.query,body.k,max(30,body.k));ids=[x.id for x in results]
+        _,results=await SearchService(db).search(body.knowledge_base_id,ex.query,body.k,max(body.retrieve_k,body.k),body.mode);ids=[x.id for x in results]
         if ex.relevant_source_uris:ids=list(dict.fromkeys(x.source_uri for x in results));relevant=set(ex.relevant_source_uris)
         else:relevant=set(ex.relevant_chunk_ids)
         scores={"recall_at_k":recall_at_k(ids,relevant,body.k),"precision_at_k":precision_at_k(ids,relevant,body.k),"mrr":reciprocal_rank(ids,relevant),"ndcg_at_k":ndcg_at_k(ids,relevant,body.k)}
         for key,value in scores.items():totals[key]+=value
         details.append({"query":ex.query,**scores})
     metrics={key:round(value/max(len(body.examples),1),6) for key,value in totals.items()};passed=metrics["recall_at_k"]>=.82 and metrics["precision_at_k"]>=.08 and metrics["mrr"]>=.58 and metrics["ndcg_at_k"]>=.70
-    run=EvalRun(dataset_name=body.dataset_name,config={"k":body.k,"examples":len(body.examples)},metrics=metrics,passed=passed);db.add(run);await db.commit()
-    return {"run_id":run.id,"passed":passed,"metrics":metrics,"details":details}
+    run=EvalRun(dataset_name=body.dataset_name,config={"k":body.k,"retrieve_k":body.retrieve_k,"examples":len(body.examples),"mode":body.mode},metrics=metrics,passed=passed);db.add(run);await db.commit()
+    return {"run_id":run.id,"mode":body.mode,"passed":passed,"metrics":metrics,"details":details}
 
 @app.get("/api/v1/evaluations")
 async def list_evaluations(limit:int=Query(20,ge=1,le=100),db:AsyncSession=Depends(get_db)):

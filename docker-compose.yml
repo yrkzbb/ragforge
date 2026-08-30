@@ -15,7 +15,7 @@ services:
     build: ./backend
     env_file: .env
     environment: {DATABASE_URL: postgresql+asyncpg://ragforge:ragforge@postgres:5432/ragforge, REDIS_URL: redis://redis:6379/0, OTLP_ENDPOINT: http://otel-collector:4317, HF_HOME: /models/huggingface, FASTEMBED_CACHE_PATH: /models/fastembed}
-    volumes: ["modelcache:/models"]
+    volumes: ["modelcache:/models", "./backend/reports:/app/reports"]
     healthcheck: {test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"], interval: 10s, timeout: 5s, retries: 10}
     security_opt: ["no-new-privileges:true"]
     ports: ["8000:8000"]

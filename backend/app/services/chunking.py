@@ -5,6 +5,12 @@ from dataclasses import dataclass
 class ChunkDraft:
     level:str; ordinal:int; breadcrumb:str; text:str; parent_ordinal:int|None=None
 
+def embedding_text(breadcrumb:str,text:str)->str:
+    """Build the structure-aware text embedded for a child chunk."""
+    heading=breadcrumb.strip()
+    body=text.strip()
+    return f"标题层级：{heading}\n正文：{body}" if heading else body
+
 def _tokens(text:str)->list[str]:
     return re.findall(r"[\u4e00-\u9fff]|[A-Za-z0-9_]+",text.lower())
 
@@ -32,4 +38,3 @@ def parent_child_chunks(text:str,title:str,parent_size:int=700,child_size:int=22
                 child=" ".join(_tokens(parent)[start:start+child_size])
                 if child:drafts.append(ChunkDraft("child",ordinal,crumb,child,parent_ord));ordinal+=1
     return drafts
-

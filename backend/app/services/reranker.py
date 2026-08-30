@@ -24,6 +24,11 @@ class CrossEncoderReranker:
     def __init__(self):
         self.settings = get_settings()
 
+    def _protect_base_top(self, candidates: list[Candidate], ranked: list[Candidate]) -> list[Candidate]:
+        protected = candidates[:self.settings.reranker_protect_top_n]
+        protected_ids = {item.id for item in protected}
+        return protected + [item for item in ranked if item.id not in protected_ids]
+
     @staticmethod
     def _fallback(query: str, candidates: list[Candidate]) -> list[Candidate]:
         query_chars = set(query.lower())
@@ -40,19 +45,27 @@ class CrossEncoderReranker:
             span.set_attribute("reranker.candidate_count", len(candidates))
             if not self.settings.reranker_enabled:
                 span.set_attribute("reranker.mode", "fallback_disabled")
-                return self._fallback(query, candidates)[:top_k]
+                ranked = self._fallback(query, candidates)
+                return self._protect_base_top(candidates, ranked)[:top_k]
             try:
                 model = await asyncio.to_thread(_load_model, self.settings.reranker_model)
+                inputs = [f"{item.breadcrumb}\n{item.text}\n{item.parent_text[:1000]}" for item in candidates]
                 scores = await asyncio.to_thread(
-                    model.rerank, query, [item.text for item in candidates],
+                    model.rerank, query, inputs,
                     batch_size=self.settings.reranker_batch_size,
                 )
-                for candidate, score in zip(candidates, scores, strict=True):
-                    candidate.rerank_score = float(score)
+                model_order = sorted(range(len(candidates)), key=lambda index: float(scores[index]), reverse=True)
+                model_rank = {candidate_index: rank for rank, candidate_index in enumerate(model_order, 1)}
+                weight = self.settings.reranker_model_weight
+                for base_rank, candidate in enumerate(candidates, 1):
+                    candidate.rerank_score = weight / (60 + model_rank[base_rank - 1]) + (1 - weight) / (60 + base_rank)
                 span.set_attribute("reranker.mode", "cross_encoder")
-                return sorted(candidates, key=lambda item: item.rerank_score, reverse=True)[:top_k]
+                span.set_attribute("reranker.model_weight", weight)
+                ranked = sorted(candidates, key=lambda item: item.rerank_score, reverse=True)
+                return self._protect_base_top(candidates, ranked)[:top_k]
             except Exception as exc:
                 span.record_exception(exc)
                 span.set_attribute("reranker.mode", "fallback_error")
                 span.set_attribute("reranker.error", type(exc).__name__)
-                return self._fallback(query, candidates)[:top_k]
+                ranked = self._fallback(query, candidates)
+                return self._protect_base_top(candidates, ranked)[:top_k]
