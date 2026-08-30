@@ -60,6 +60,8 @@ async def test_react_agent_searches_then_answers():
     assert result.iterations == 2
     assert result.contexts[0].id == "chunk-1"
     assert result.usage == {"input_tokens": 4, "output_tokens": 2}
+    assert result.status == "completed"
+    assert [step["phase"] for step in result.loop_steps] == ["perceive", "think", "act", "observe", "think", "complete"]
 
 
 @pytest.mark.asyncio

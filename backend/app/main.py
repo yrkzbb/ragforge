@@ -173,7 +173,7 @@ async def chat(body:ChatRequest,request:Request,db:AsyncSession=Depends(get_db))
             span.set_attribute("agent.usage.output_tokens",usage["output_tokens"])
             span.set_attribute("agent.usage.estimated_cost_usd",cost)
             AGENT_REQUESTS.labels("chat","ok").inc()
-            return {"answer":answer,"sources":grounded_sources(body.message,answer,contexts),"memory_ids":[str(item.id) for item in memory_items],"handoffs":result.handoffs,"iterations":result.iterations,"usage":{**usage,"estimated_cost_usd":cost},"trace_id":format(span.get_span_context().trace_id,"032x")}
+            return {"answer":answer,"sources":grounded_sources(body.message,answer,contexts),"memory_ids":[str(item.id) for item in memory_items],"handoffs":result.handoffs,"iterations":result.iterations,"loop_steps":result.loop_steps,"status":result.status,"usage":{**usage,"estimated_cost_usd":cost},"trace_id":format(span.get_span_context().trace_id,"032x")}
         except AgentExecutionError as exc:
             AGENT_REQUESTS.labels("chat","error").inc();span.record_exception(exc);span.set_status(Status(StatusCode.ERROR,str(exc)));raise HTTPException(503,str(exc)) from exc
         except TimeoutError as exc:

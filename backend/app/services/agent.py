@@ -22,6 +22,8 @@ class AgentResult:
     usage: dict
     iterations: int
     handoffs: list
+    loop_steps: list
+    status: str
 
 
 class ReActAgent:
@@ -66,16 +68,19 @@ class ReActAgent:
         observations, contexts, memory_items = [], [], []
         usage = {"input_tokens": 0, "output_tokens": 0}
         handoffs = []
+        loop_steps = [{"iteration": 0, "phase": "perceive", "title": "感知任务与上下文", "detail": body.message, "status": "completed"}]
 
         for iteration in range(1, self.settings.agent_max_iterations + 1):
             decision, step_usage = await self._node(
                 "reason", lambda: self.llm.react_step(body.message, observations)
             )
+            loop_steps.append({"iteration": iteration, "phase": "think", "title": "思考并选择下一步", "detail": "已有证据足够，准备完成任务" if decision["action"] == "final" else f"选择工具：{decision['action']}", "status": "completed"})
             for key in usage:
                 usage[key] += step_usage.get(key, 0)
 
             if decision["action"] == "final":
-                return AgentResult(decision["answer"], contexts, memory_items, usage, iteration, handoffs)
+                loop_steps.append({"iteration": iteration, "phase": "complete", "title": "任务完成", "detail": "已生成最终结果并退出循环", "status": "completed"})
+                return AgentResult(decision["answer"], contexts, memory_items, usage, iteration, handoffs, loop_steps, "completed")
 
             if decision["action"] != "knowledge_base_search":
                 raise AgentExecutionError(f"unsupported action: {decision['action']}")
@@ -92,6 +97,7 @@ class ReActAgent:
                     ),
                 )
                 tool_span.set_attribute("tool.result.count", len(contexts))
+            loop_steps.append({"iteration": iteration, "phase": "act", "title": "执行知识库检索", "detail": decision["query"], "status": "completed"})
 
             memory_service = FeedbackMemoryService(self.db)
             memory_items = await self._node(
@@ -113,6 +119,7 @@ class ReActAgent:
                     for item in memory_items
                 ],
             })
+            loop_steps.append({"iteration": iteration, "phase": "observe", "title": "观察工具结果", "detail": f"获得 {len(contexts)} 个候选分块与 {len(memory_items)} 条已确认记忆", "status": "completed"})
             self._handoff("retrieval-agent", "orchestrator", "observation_ready", iteration)
             handoffs.append({"from": "retrieval-agent", "to": "orchestrator"})
 
